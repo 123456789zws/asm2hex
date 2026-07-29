@@ -80,15 +80,13 @@ jobs:
       run: |
         set -e
         export PATH="$(go env GOPATH)/bin:$(go env GOROOT)/bin:$PATH"
-        python -m pip install --user pillow
-        python scripts/gen_ico.py
+        # Use committed ICO (theme/icons/asm2hex.ico); optional regenerate with scripts/gen_ico.py
         test -f theme/icons/asm2hex.ico
         go install github.com/josephspurrier/goversioninfo/cmd/goversioninfo@v1.4.1
-        # Generate resource.syso next to main package so go build links it automatically
-        # -64: PE resource for amd64; file must be named *_windows.syso for go build
+        # -64: PE resource for amd64; *_windows.syso is picked up by go build on Windows
         goversioninfo -64 \
-          -icon=theme/icons/asm2hex.ico \
-          -o=resource_windows.syso \
+          -icon theme/icons/asm2hex.ico \
+          -o resource_windows.syso \
           packaging/versioninfo.json
         ls -la resource_windows.syso
 
