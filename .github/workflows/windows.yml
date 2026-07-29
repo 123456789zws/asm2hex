@@ -33,7 +33,6 @@ jobs:
           make
           zip
           binutils
-          patch
           python
         pacboy: >-
           toolchain:p
@@ -42,7 +41,7 @@ jobs:
           go:p
           capstone:p
 
-    - name: '📦 Build static Keystone (MSYS2 only ships import lib)'
+    - name: '📦 Build static Keystone and install into MinGW prefix'
       run: |
         set -e
         LOCAL_PREFIX="$(pwd)/third_party/prefix"
@@ -51,43 +50,46 @@ jobs:
         git clone --depth 1 --branch 0.9.2 https://github.com/keystone-engine/keystone.git tmp/keystone
         cd tmp/keystone
 
-        # Patch for CMake 4+: raise minimum version and drop removed OLD policies
+        # Patch for CMake 4+
         find . -name 'CMakeLists.txt' -print0 | xargs -0 sed -i \
           -e 's/cmake_minimum_required(VERSION [0-9.]*)/cmake_minimum_required(VERSION 3.16)/g' \
           -e 's/cmake_policy(SET CMP0051 OLD)/cmake_policy(SET CMP0051 NEW)/g' \
           -e 's/cmake_policy(SET CMP0012 OLD)/cmake_policy(SET CMP0012 NEW)/g'
 
-        # Prefer static runtime embedding when available
         cmake -S . -B build -G Ninja \
           -DCMAKE_INSTALL_PREFIX="$LOCAL_PREFIX" \
           -DCMAKE_BUILD_TYPE=Release \
           -DBUILD_SHARED_LIBS=OFF \
           -DBUILD_LIBS_ONLY=ON \
           -DKEYSTONE_BUILD_STATIC_RUNTIME=ON \
-          -DCMAKE_POLICY_VERSION_MINIMUM=3.16 \
-          -DCMAKE_CXX_FLAGS="-static-libgcc -static-libstdc++"
+          -DCMAKE_POLICY_VERSION_MINIMUM=3.16
 
         cmake --build build --config Release --parallel
         cmake --install build
 
-        echo "=== installed keystone ==="
-        ls -la "$LOCAL_PREFIX/lib" || true
-        ls -la "$LOCAL_PREFIX/include/keystone" || true
-        test -f "$LOCAL_PREFIX/lib/libkeystone.a" || test -f "$LOCAL_PREFIX/lib/keystone.lib" || {
-          # Some installs name it differently
-          find "$LOCAL_PREFIX" -name '*keystone*' -type f
-          exit 1
-        }
+        test -f "$LOCAL_PREFIX/lib/libkeystone.a"
+
+        # Put static archive where the MinGW linker always looks.
+        # Remove import library so -lkeystone cannot pick the DLL stub.
+        cp -f "$LOCAL_PREFIX/lib/libkeystone.a" "${MSYSTEM_PREFIX}/lib/libkeystone.a"
+        rm -f "${MSYSTEM_PREFIX}/lib/libkeystone.dll.a"
+        mkdir -p "${MSYSTEM_PREFIX}/include"
+        cp -a "$LOCAL_PREFIX/include/keystone" "${MSYSTEM_PREFIX}/include/"
+
+        echo "=== keystone static lib ==="
+        ls -la "${MSYSTEM_PREFIX}/lib/libkeystone.a"
+        ls -la "${MSYSTEM_PREFIX}/lib/libcapstone.a"
+        # Ensure capstone also uses static archive only
+        rm -f "${MSYSTEM_PREFIX}/lib/libcapstone.dll.a" || true
 
     - name: '🏗️ Build fully static GUI binary'
       run: |
         set -e
         export PATH="$(go env GOPATH)/bin:$(go env GOROOT)/bin:$PATH"
-        LOCAL_PREFIX="$(pwd)/third_party/prefix"
         export CGO_ENABLED=1
-        # Capstone: MSYS2 static .a; Keystone: our static build
-        export CGO_CFLAGS="-I${LOCAL_PREFIX}/include -I${MSYSTEM_PREFIX}/include -O2 -Wall"
-        export CGO_LDFLAGS="-L${LOCAL_PREFIX}/lib -L${MSYSTEM_PREFIX}/lib -Wl,-Bstatic -lkeystone -lcapstone -lstdc++ -lwinpthread -Wl,-Bdynamic -lm -lole32 -lshell32 -lkernel32 -lversion -luuid -lwinmm -lgdi32 -luser32 -lopengl32 -ldwmapi -lcomdlg32 -lcomctl32 -limm32"
+        export CGO_CFLAGS="-I${MSYSTEM_PREFIX}/include -O2 -Wall"
+        # Static engines + C++/pthread; Windows system DLLs remain dynamic (normal).
+        export CGO_LDFLAGS="-L${MSYSTEM_PREFIX}/lib -Wl,-Bstatic -lkeystone -lcapstone -lstdc++ -lwinpthread -Wl,-Bdynamic -lm -lole32 -lshell32 -lkernel32 -lversion -luuid -lwinmm -lgdi32 -luser32 -lopengl32 -ldwmapi -lcomdlg32 -lcomctl32 -limm32"
 
         go version
         mkdir -p build release
@@ -96,25 +98,17 @@ jobs:
           -ldflags="-s -w -H windowsgui -extldflags=-static-libgcc -extldflags=-static-libstdc++" \
           -o "build/ASM to HEX Converter.exe" .
 
-        echo "=== PE imported DLLs ==="
+        echo "=== PE imported DLLs (Windows system only is OK) ==="
         objdump -p "build/ASM to HEX Converter.exe" | grep -i "DLL Name" || true
 
-        BAD=$(objdump -p "build/ASM to HEX Converter.exe" | grep -iE "DLL Name.*(libgcc|libstdc|libwinpthread|libkeystone|libcapstone|msys-)" || true)
+        BAD=$(objdump -p "build/ASM to HEX Converter.exe" | grep -iE "DLL Name.*(libgcc|libstdc\+\+|libwinpthread|libkeystone|libcapstone|msys-)" || true)
         if [ -n "$BAD" ]; then
-          echo "Retry with full -static..."
-          go build -trimpath \
-            -ldflags="-s -w -H windowsgui -extldflags=-static" \
-            -o "build/ASM to HEX Converter.exe" .
-          echo "=== PE imported DLLs (after -static) ==="
-          objdump -p "build/ASM to HEX Converter.exe" | grep -i "DLL Name" || true
-          BAD=$(objdump -p "build/ASM to HEX Converter.exe" | grep -iE "DLL Name.*(libgcc|libstdc|libwinpthread|libkeystone|libcapstone|msys-)" || true)
-          if [ -n "$BAD" ]; then
-            echo "ERROR: binary still depends on MinGW/engine DLLs:"
-            echo "$BAD"
-            exit 1
-          fi
+          echo "ERROR: binary still depends on MinGW/engine DLLs:"
+          echo "$BAD"
+          exit 1
         fi
 
+        # Single-file zip
         cp "build/ASM to HEX Converter.exe" release/
         (cd release && zip -r "../asm2hex-windows-${{ matrix.sys }}.zip" .)
         mv "asm2hex-windows-${{ matrix.sys }}.zip" release/
