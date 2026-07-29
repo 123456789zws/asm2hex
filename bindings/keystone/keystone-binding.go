@@ -46,13 +46,21 @@ func ks_asm(engine *C.ks_engine, str string, address uint64, encoding *[]byte, s
 	cstr := C.CString(str)
 	defer C.free(unsafe.Pointer(cstr))
 
-	var p_insn unsafe.Pointer
-	defer C.free(unsafe.Pointer(p_insn))
-
+	var p_insn *C.uchar
 	var count, l_insn C.size_t
-	err := C.ks_asm(engine, cstr, C.uint64_t(address), (**C.uchar)(unsafe.Pointer(&p_insn)), &l_insn, &count)
-	*encoding = C.GoBytes(p_insn, C.int(l_insn))
+	err := C.ks_asm(engine, cstr, C.uint64_t(address), &p_insn, &l_insn, &count)
 	*stat_count = uint64(count)
+	if p_insn != nil {
+		if err == 0 && l_insn > 0 {
+			*encoding = C.GoBytes(unsafe.Pointer(p_insn), C.int(l_insn))
+		} else {
+			*encoding = nil
+		}
+		// Keystone allocates with its own allocator; must use ks_free.
+		C.ks_free(p_insn)
+	} else {
+		*encoding = nil
+	}
 	return err == 0
 }
 

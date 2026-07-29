@@ -41,15 +41,18 @@ var KeystoneModeOptions = map[uint64]OptionSlice{
 }
 
 var KeystoneSyntaxList = OptionSlice{}
+// KeystoneSyntaxOptions: KS_OPT_SYNTAX is only valid for X86. Listing Intel/ATT
+// for other arches previously caused the UI to apply an invalid option and
+// break instructions such as ARM64 movk (see issue #8).
 var KeystoneSyntaxOptions = map[uint64]OptionSlice{
-	uint64(keystone.ARCH_ARM):     {{uint64(keystone.OPT_SYNTAX_INTEL), "Intel"}, {uint64(keystone.OPT_SYNTAX_ATT), "ATT"}},
-	uint64(keystone.ARCH_ARM64):   {{uint64(keystone.OPT_SYNTAX_INTEL), "Intel"}, {uint64(keystone.OPT_SYNTAX_ATT), "ATT"}},
-	uint64(keystone.ARCH_MIPS):    {{uint64(keystone.OPT_SYNTAX_INTEL), "Intel"}, {uint64(keystone.OPT_SYNTAX_ATT), "ATT"}},
+	uint64(keystone.ARCH_ARM):     {},
+	uint64(keystone.ARCH_ARM64):   {},
+	uint64(keystone.ARCH_MIPS):    {},
 	uint64(keystone.ARCH_X86):     {{uint64(keystone.OPT_SYNTAX_INTEL), "Intel"}, {uint64(keystone.OPT_SYNTAX_ATT), "ATT"}, {uint64(keystone.OPT_SYNTAX_NASM), "NASM"}, {uint64(keystone.OPT_SYNTAX_MASM), "MASM"}, {uint64(keystone.OPT_SYNTAX_GAS), "GAS"}, {uint64(keystone.OPT_SYNTAX_RADIX16), "Radix16"}},
-	uint64(keystone.ARCH_PPC):     {{uint64(keystone.OPT_SYNTAX_INTEL), "Intel"}, {uint64(keystone.OPT_SYNTAX_ATT), "ATT"}},
-	uint64(keystone.ARCH_SPARC):   {{uint64(keystone.OPT_SYNTAX_INTEL), "Intel"}, {uint64(keystone.OPT_SYNTAX_ATT), "ATT"}},
-	uint64(keystone.ARCH_SYSTEMZ): {{uint64(keystone.OPT_SYNTAX_INTEL), "Intel"}, {uint64(keystone.OPT_SYNTAX_ATT), "ATT"}},
-	uint64(keystone.ARCH_HEXAGON): {{uint64(keystone.OPT_SYNTAX_INTEL), "Intel"}},
+	uint64(keystone.ARCH_PPC):     {},
+	uint64(keystone.ARCH_SPARC):   {},
+	uint64(keystone.ARCH_SYSTEMZ): {},
+	uint64(keystone.ARCH_HEXAGON): {},
 }
 
 var CapstoneArchOptions = OptionSlice{
@@ -116,10 +119,11 @@ var CapstoneSyntaxOptions = map[uint64]OptionSlice{
 	uint64(capstone.ARCH_TRICORE):    {{uint64(capstone.OPT_SYNTAX_DEFAULT), "Default"}},
 }
 
-func Disassemble(arch capstone.Architecture, mode capstone.Mode, code []byte, offset uint64, bigEndian bool, syntaxValue int, addAddress bool) (string, uint64, bool, error) {
+func Disassemble(arch capstone.Architecture, mode capstone.Mode, code []byte, offset uint64, bigEndian bool, syntaxValue int, addAddress bool) (result string, count uint64, ok bool, err error) {
 	defer func() {
 		if r := recover(); r != nil {
-			return
+			result, count, ok = "", 0, false
+			err = fmt.Errorf("disassemble panic: %v", r)
 		}
 	}()
 
@@ -130,7 +134,8 @@ func Disassemble(arch capstone.Architecture, mode capstone.Mode, code []byte, of
 	defer engine.Close()
 
 	if syntaxValue >= 0 {
-		engine.Option(capstone.OPT_SYNTAX, capstone.OptionValue(syntaxValue))
+		// Ignore option errors; invalid syntax values must not abort disassembly.
+		_ = engine.Option(capstone.OPT_SYNTAX, capstone.OptionValue(syntaxValue))
 	}
 
 	if bigEndian {
@@ -145,21 +150,45 @@ func Disassemble(arch capstone.Architecture, mode capstone.Mode, code []byte, of
 		return "", 0, false, err
 	}
 
-	var result string
+	var b strings.Builder
 	for _, insn := range insns {
 		if addAddress {
-			result += fmt.Sprintf("%08X:\t%-6s\t%-20s\n", insn.Address(), insn.Mnemonic(), insn.OpStr())
+			b.WriteString(fmt.Sprintf("%08X:\t%-6s\t%-20s\n", insn.Address(), insn.Mnemonic(), insn.OpStr()))
 		} else {
-			result += fmt.Sprintf("%-6s\t%-20s\n", insn.Mnemonic(), insn.OpStr())
+			b.WriteString(fmt.Sprintf("%-6s\t%-20s\n", insn.Mnemonic(), insn.OpStr()))
 		}
 	}
 
-	return result, uint64(len(insns)), true, nil
+	return b.String(), uint64(len(insns)), true, nil
 }
-func Assemble(arch keystone.Architecture, mode keystone.Mode, code string, offset uint64, bigEndian bool, syntaxValue int) ([]byte, uint64, bool, error) {
+
+// looksLikeAssembly rejects incomplete operand fragments that can hang Keystone's
+// LLVM-based parser (e.g. pasting only "[fp, #-0x10]" without a mnemonic).
+func looksLikeAssembly(code string) bool {
+	code = strings.TrimSpace(code)
+	if code == "" {
+		return false
+	}
+	// Operand-only / fragment forms that Keystone may hang or mishandle on.
+	switch code[0] {
+	case '[', ']', '{', '}', '(', ')', ',', '#', '!', '=', '"', '\'':
+		return false
+	}
+	return true
+}
+
+// supportsKeystoneSyntax reports whether KS_OPT_SYNTAX is valid for the arch.
+// Applying syntax options on non-x86 engines corrupts Keystone state and causes
+// real instructions (e.g. ARM64 movk with lsl) to fail with "Unknown error".
+func supportsKeystoneSyntax(arch keystone.Architecture) bool {
+	return arch == keystone.ARCH_X86
+}
+
+func Assemble(arch keystone.Architecture, mode keystone.Mode, code string, offset uint64, bigEndian bool, syntaxValue int) (encoding []byte, statCount uint64, ok bool, err error) {
 	defer func() {
 		if r := recover(); r != nil {
-			return
+			encoding, statCount, ok = nil, 0, false
+			err = fmt.Errorf("assemble panic: %v", r)
 		}
 	}()
 
@@ -170,8 +199,15 @@ func Assemble(arch keystone.Architecture, mode keystone.Mode, code string, offse
 	if strings.HasPrefix(code, ";") {
 		return nil, 0, false, fmt.Errorf("commented code")
 	}
-	if idx := strings.Index(code, ";"); idx > 0 {
-		code = code[:idx]
+	if idx := strings.Index(code, ";"); idx >= 0 {
+		code = strings.TrimSpace(code[:idx])
+		if code == "" {
+			return nil, 0, false, fmt.Errorf("commented code")
+		}
+	}
+
+	if !looksLikeAssembly(code) {
+		return nil, 0, false, fmt.Errorf("invalid assembly (incomplete operand or fragment)")
 	}
 
 	ks, err := keystone.New(keystone.Architecture(arch), keystone.Mode(mode))
@@ -180,21 +216,29 @@ func Assemble(arch keystone.Architecture, mode keystone.Mode, code string, offse
 	}
 	defer ks.Close()
 
-	if syntaxValue >= 0 {
-		ks.Option(keystone.OPT_SYNTAX, keystone.OptionValue(syntaxValue))
+	// Only X86 supports KS_OPT_SYNTAX. Setting it on ARM/ARM64/etc. returns
+	// KS_ERR_OPT_INVALID but still poisons the engine so instructions like
+	// "movk x9, #imm, lsl #16" fail with an empty/unknown error.
+	if syntaxValue >= 0 && supportsKeystoneSyntax(arch) {
+		if optErr := ks.Option(keystone.OPT_SYNTAX, keystone.OptionValue(syntaxValue)); optErr != nil {
+			return nil, 0, false, optErr
+		}
 	}
 
-	encoding, stat_count, ok := ks.Assemble(code, offset)
-	if err := ks.LastError(); err != nil {
-		return nil, 0, false, err
+	encoding, statCount, ok = ks.Assemble(code, offset)
+	if asmErr := ks.LastError(); asmErr != nil {
+		return nil, 0, false, asmErr
+	}
+	if !ok {
+		return nil, 0, false, fmt.Errorf("failed to assemble instruction")
 	}
 
-	if ok && bigEndian {
+	if bigEndian {
 		encoding, err = keystoneToBigEndian(encoding, arch, mode)
 		if err != nil {
 			return nil, 0, false, err
 		}
 	}
 
-	return encoding, stat_count, ok, nil
+	return encoding, statCount, true, nil
 }
