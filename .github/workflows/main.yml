@@ -4,6 +4,10 @@ on:
   push:
     branches:
       - main
+  workflow_dispatch:
+
+permissions:
+  contents: write
 
 jobs:
   windows_build:
@@ -11,3 +15,83 @@ jobs:
 
   macos_build:
     uses: ./.github/workflows/macos.yml
+
+  release:
+    name: 发布 (Publish Release)
+    needs: [windows_build, macos_build]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Read app version
+        id: version
+        run: |
+          # FyneApp.toml: Version = "x.y.z"
+          ver=$(grep -E '^\s*Version\s*=' FyneApp.toml | head -1 | sed -E 's/.*"([^"]+)".*/\1/')
+          if [ -z "$ver" ]; then
+            ver="0.0.0"
+          fi
+          short_sha=$(echo "${GITHUB_SHA}" | cut -c1-7)
+          echo "version=${ver}" >> "$GITHUB_OUTPUT"
+          echo "tag=v${ver}" >> "$GITHUB_OUTPUT"
+          echo "short_sha=${short_sha}" >> "$GITHUB_OUTPUT"
+          echo "Resolved version=${ver} tag=v${ver}"
+
+      - name: Download Windows artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: windows-mingw64-build
+          path: dist/windows
+
+      - name: Download macOS artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: macos-build
+          path: dist/macos
+
+      - name: Prepare release assets
+        run: |
+          mkdir -p upload
+          find dist -type f -print
+          # Prefer zip packages; fall back to raw binaries
+          if ls dist/windows/*.zip >/dev/null 2>&1; then
+            cp dist/windows/*.zip upload/
+          else
+            (cd dist/windows && zip -r ../../upload/asm2hex-windows-mingw64.zip .)
+          fi
+          if ls dist/macos/*.zip >/dev/null 2>&1; then
+            cp dist/macos/*.zip upload/
+          else
+            (cd dist/macos && zip -r ../../upload/asm2hex-macos.zip .)
+          fi
+          # Stable release names including version
+          for f in upload/*.zip; do
+            base=$(basename "$f" .zip)
+            cp "$f" "upload/${base}-${{ steps.version.outputs.version }}.zip"
+          done
+          ls -lah upload/
+
+      - name: Create or update GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.version.outputs.tag }}
+          name: ASM to HEX Converter ${{ steps.version.outputs.tag }}
+          target_commitish: ${{ github.sha }}
+          generate_release_notes: true
+          body: |
+            ## ASM to HEX Converter ${{ steps.version.outputs.tag }}
+
+            Automated build from commit `${{ steps.version.outputs.short_sha }}` on `main`.
+
+            ### Assets
+            - **Windows** (`mingw64`): `asm2hex-windows-mingw64-*.zip`
+            - **macOS**: `asm2hex-macos-*.zip`
+
+            ### Notes
+            - Includes bug fixes for ARM64 `movk` assembly and UI freeze on incomplete operand paste.
+          files: |
+            upload/*.zip
+          fail_on_unmatched_files: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

@@ -2,6 +2,10 @@ name: Windows 构建 (Windows Build)
 
 on:
   workflow_call:
+    outputs:
+      artifact_name:
+        description: "Uploaded artifact name"
+        value: windows-mingw64-build
 
 jobs:
   build:
@@ -11,10 +15,7 @@ jobs:
       fail-fast: false
       matrix:
         include:
-        #   - { icon: '⬛', sys: mingw32 }
           - { icon: '🟦', sys: mingw64 }
-        #   - { icon: '🟨', sys: ucrt64 }
-        #   - { icon: '🟧', sys: clang64 }
 
     name: 🚧${{ matrix.icon }} ${{ matrix.sys }}
 
@@ -31,7 +32,7 @@ jobs:
     - name: '${{ matrix.icon }} Setup MSYS2'
       uses: msys2/setup-msys2@v2
       with:
-        msystem: ${{matrix.sys}}
+        msystem: ${{ matrix.sys }}
         update: true
         install: >-
           git
@@ -45,47 +46,33 @@ jobs:
 
     - name: '🚧 Install Fyne'
       run: |
-        go install fyne.io/fyne/v2/cmd/fyne@latest
-        if [ $? -ne 0 ]; then
-          echo "安装 Fyne 失败 (Failed to install Fyne)"
-          exit 1
-        fi
-        export PATH="$(go env GOPATH)/bin:$PATH"
+        export PATH="$(go env GOPATH)/bin:$(go env GOROOT)/bin:$PATH"
+        go install fyne.io/fyne/v2/cmd/fyne@v2.4.5
         cp "$(go env GOPATH)/bin/fyne.exe" "$MSYSTEM_PREFIX/bin/"
-
-    - name: '🚀 Set up environment variables'
-      run: |
-        export CGO_ENABLED=1
-        export CGO_CFLAGS="-I/$MSYSTEM_PREFIX/include -O2 -Wall"
-        export CGO_LDFLAGS="-L/$MSYSTEM_PREFIX/lib -static -lcapstone -lkeystone -lole32 -lshell32 -lkernel32 -lversion -luuid"
-        export GOROOT="$(go env GOROOT)"
-        export GOPATH="$(go env GOPATH)"
-        export PATH="$GOROOT/bin:$GOPATH/bin:$PATH"
 
     - name: '📦 Build Capstone and Keystone libraries'
       run: |
+        export PATH="$(go env GOPATH)/bin:$(go env GOROOT)/bin:$PATH"
         make lib
-        if [ $? -ne 0 ]; then
-          echo "构建 Capstone 和 Keystone 库失败 (Failed to build Capstone and Keystone libraries)"
-          exit 1
-        fi
 
     - name: '🏗️ Build project'
       run: |
+        export PATH="$(go env GOPATH)/bin:$(go env GOROOT)/bin:$PATH"
+        export CGO_ENABLED=1
         make build
-        if [ $? -ne 0 ]; then
-          echo "构建项目失败 (Failed to build project)"
-          exit 1
-        fi
 
     - name: '📁 Compress Release Asset (Windows)'
       run: |
-        mkdir release
+        mkdir -p release
         cp ./build/*.exe ./release/
-        7z a -tzip asm2hex-windows-${{ matrix.sys }}.zip ./release/*
+        7z a -tzip "asm2hex-windows-${{ matrix.sys }}.zip" ./release/*
+        mv "asm2hex-windows-${{ matrix.sys }}.zip" ./release/
 
     - name: '🚀 Upload Build Artifacts'
-      uses: actions/upload-artifact@v3
+      uses: actions/upload-artifact@v4
       with:
         name: windows-${{ matrix.sys }}-build
-        path: ./release/
+        path: |
+          ./release/*.zip
+          ./release/*.exe
+        if-no-files-found: error

@@ -2,35 +2,40 @@ name: macOS 构建 (macOS Build)
 
 on:
   workflow_call:
+    outputs:
+      artifact_name:
+        description: "Uploaded artifact name"
+        value: macos-build
 
 jobs:
   build:
     runs-on: macos-latest
 
     steps:
-    - uses: actions/checkout@v3
+    - uses: actions/checkout@v4
       with:
         fetch-depth: 0
 
     - name: 设置 Go 环境 (Set up Go)
-      uses: actions/setup-go@v3
+      uses: actions/setup-go@v5
       with:
-        go-version: 1.22.3
+        go-version: '1.22.x'
 
     - name: 安装依赖 (macOS) (Install dependencies (macOS))
       run: |
-        brew install make
-        brew install git
         brew install cmake
+        # Allow older Keystone/Capstone CMakeLists on CMake 4+
+        echo "CMAKE_POLICY_VERSION_MINIMUM=3.5" >> "$GITHUB_ENV"
 
     - name: 安装 Fyne (Install Fyne)
-      run: go install fyne.io/fyne/v2/cmd/fyne@latest
+      run: go install fyne.io/fyne/v2/cmd/fyne@v2.4.5
 
     - name: 设置环境变量 (Set up environment variables)
       run: |
-        echo "CGO_ENABLED=1" >> $GITHUB_ENV
-        echo 'CGO_CFLAGS="-I/usr/local/include -O2 -Wall"' >> $GITHUB_ENV
-        echo 'CGO_LDFLAGS="-L/usr/local/lib -lcapstone -lkeystone"' >> $GITHUB_ENV
+        echo "CGO_ENABLED=1" >> "$GITHUB_ENV"
+        echo "CGO_CFLAGS=-I/usr/local/include -O2 -Wall" >> "$GITHUB_ENV"
+        echo "CGO_LDFLAGS=-L/usr/local/lib -lcapstone -lkeystone" >> "$GITHUB_ENV"
+        echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
 
     - name: 构建 Capstone 和 Keystone 库 (Build Capstone and Keystone libraries)
       run: make lib
@@ -40,12 +45,17 @@ jobs:
 
     - name: 压缩发布资源 (macOS) (Compress Release Asset (macOS))
       run: |
-        mkdir release
-        cp -r ./build/*.app ./release/
-        zip -r asm2hex-macos-${{ github.ref_name }}.zip ./release/*
+        mkdir -p release
+        cp -R ./build/*.app ./release/ || true
+        # Also keep raw app bundle name stable for release consumers
+        zip -r "asm2hex-macos.zip" ./release/*
+        mv asm2hex-macos.zip ./release/
 
     - name: 上传构建产物 (Upload Build Artifacts)
       uses: actions/upload-artifact@v4
       with:
         name: macos-build
-        path: ./release/
+        path: |
+          ./release/*.zip
+          ./release/*.app
+        if-no-files-found: error
