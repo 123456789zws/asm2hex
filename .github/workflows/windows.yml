@@ -48,7 +48,8 @@ jobs:
         export CGO_LDFLAGS="-L${MSYSTEM_PREFIX}/lib -lcapstone -lkeystone -lstdc++ -lole32 -lshell32 -lkernel32 -lversion -luuid"
         go version
         mkdir -p build release
-        go build -trimpath -ldflags="-s -w" -o "build/ASM to HEX Converter.exe" .
+        # -H windowsgui: hide the black console window for GUI apps on Windows
+        go build -trimpath -ldflags="-s -w -H windowsgui" -o "build/ASM to HEX Converter.exe" .
         # Bundle runtime DLLs so the zip is portable outside MSYS2.
         for dll in libkeystone libcapstone libgcc_s_seh-1 libstdc++-6 libwinpthread-1; do
           if [ -f "${MSYSTEM_PREFIX}/bin/${dll}.dll" ]; then

@@ -128,11 +128,20 @@ build_riscv:
 	echo "Build completed for $(PLATFORM)"
 
 build:
+ifeq ($(PLATFORM),Windows)
+	@mkdir -p ./build && \
+	CGO_ENABLED=1 \
+	CGO_CFLAGS="$(CGO_CFLAGS)" \
+	CGO_LDFLAGS="$(CGO_LDFLAGS)" \
+	go build -trimpath -ldflags="-s -w -H windowsgui" -o "./build/ASM to HEX Converter.exe" . && \
+	echo "Build completed for $(PLATFORM) (windowsgui, no console)"
+else
 	@mkdir -p ./build && \
 	CGO_ENABLED=1 \
 	CGO_CFLAGS="$(CGO_CFLAGS)" \
 	CGO_LDFLAGS="$(CGO_LDFLAGS)" \
 	fyne package --release --target $(TARGET) --icon ./theme/icons/asm2hex.png && \
-	rm -rf ./build/$(if $(filter $(PLATFORM),Windows),*.exe,*.app) && \
-	mv -fv $(if $(filter $(PLATFORM),Windows),*.exe,*.app) ./build && \
+	rm -rf ./build/*.app && \
+	mv -fv *.app ./build && \
 	echo "Build completed for $(PLATFORM)"
+endif
