@@ -24,7 +24,9 @@ ifeq ($(PLATFORM),Windows)
                    -DLLVM_TARGETS_TO_BUILD="all" \
                    -G "Unix Makefiles"
     CGO_CFLAGS := -I/usr/local/include -O2 -Wall
-    CGO_LDFLAGS := -L/usr/local/lib -static -lcapstone -lkeystone -lole32 -lshell32 -lkernel32 -lversion -luuid
+    # Fully static: no MinGW runtime DLLs (libgcc/libstdc++/winpthread) at runtime
+    CGO_LDFLAGS := -L/usr/local/lib -lcapstone -lkeystone -lstdc++ -lm -lole32 -lshell32 -lkernel32 -lversion -luuid -lwinmm -lgdi32 -luser32 -lopengl32
+    GO_LDFLAGS := -s -w -H windowsgui -extldflags=-static
     TARGET := windows
     KEYSTONE_BUILD_CMD := cmake $(CMAKE_FLAGS) .. && $(MAKE) $(MAKE_FLAGS) && $(MAKE) install
 else ifeq ($(PLATFORM),Darwin)
@@ -133,8 +135,8 @@ ifeq ($(PLATFORM),Windows)
 	CGO_ENABLED=1 \
 	CGO_CFLAGS="$(CGO_CFLAGS)" \
 	CGO_LDFLAGS="$(CGO_LDFLAGS)" \
-	go build -trimpath -ldflags="-s -w -H windowsgui" -o "./build/ASM to HEX Converter.exe" . && \
-	echo "Build completed for $(PLATFORM) (windowsgui, no console)"
+	go build -trimpath -ldflags="$(GO_LDFLAGS)" -o "./build/ASM to HEX Converter.exe" . && \
+	echo "Build completed for $(PLATFORM) (static + windowsgui, single exe)"
 else
 	@mkdir -p ./build && \
 	CGO_ENABLED=1 \

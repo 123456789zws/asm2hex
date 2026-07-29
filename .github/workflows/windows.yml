@@ -32,38 +32,103 @@ jobs:
           git
           make
           zip
+          binutils
         pacboy: >-
           toolchain:p
+          cmake:p
+          ninja:p
           go:p
           keystone:p
           capstone:p
 
-    - name: '🏗️ Build project'
+    - name: '📦 Ensure static Keystone/Capstone archives'
+      run: |
+        set -e
+        PREFIX="${MSYSTEM_PREFIX}"
+        echo "=== available keystone/capstone libs ==="
+        ls -la "${PREFIX}/lib"/libkeystone* "${PREFIX}/lib"/libcapstone* 2>/dev/null || true
+
+        # MSYS2 usually ships both .a (static) and .dll.a (import). Prefer static.
+        # If static archives are missing, build them into a local prefix.
+        NEED_BUILD=0
+        if [ ! -f "${PREFIX}/lib/libkeystone.a" ] && [ ! -f "${PREFIX}/lib/libkeystone.dll.a" ]; then
+          NEED_BUILD=1
+        fi
+        if [ ! -f "${PREFIX}/lib/libcapstone.a" ] && [ ! -f "${PREFIX}/lib/libcapstone.dll.a" ]; then
+          NEED_BUILD=1
+        fi
+
+        # Even when .a exists as a thin import lib, static link may still pull DLLs.
+        # Always build pure static libs into ./third_party/prefix for a single-file exe.
+        LOCAL_PREFIX="$(pwd)/third_party/prefix"
+        mkdir -p "$LOCAL_PREFIX"
+        export CMAKE_POLICY_VERSION_MINIMUM=3.5
+
+        echo "=== building static Capstone ==="
+        git clone --depth 1 --branch 5.0.1 https://github.com/capstone-engine/capstone.git tmp/capstone
+        cmake -S tmp/capstone -B tmp/capstone/build \
+          -G Ninja \
+          -DCMAKE_INSTALL_PREFIX="$LOCAL_PREFIX" \
+          -DCMAKE_BUILD_TYPE=Release \
+          -DBUILD_SHARED_LIBS=OFF \
+          -DCAPSTONE_BUILD_SHARED_LIBS=OFF \
+          -DCAPSTONE_BUILD_STATIC_LIBS=ON \
+          -DCMAKE_POLICY_VERSION_MINIMUM=3.5
+        cmake --build tmp/capstone/build --config Release --parallel
+        cmake --install tmp/capstone/build
+
+        echo "=== building static Keystone ==="
+        git clone --depth 1 --branch 0.9.2 https://github.com/keystone-engine/keystone.git tmp/keystone
+        cmake -S tmp/keystone -B tmp/keystone/build \
+          -G Ninja \
+          -DCMAKE_INSTALL_PREFIX="$LOCAL_PREFIX" \
+          -DCMAKE_BUILD_TYPE=Release \
+          -DBUILD_SHARED_LIBS=OFF \
+          -DBUILD_LIBS_ONLY=ON \
+          -DCMAKE_POLICY_VERSION_MINIMUM=3.5
+        cmake --build tmp/keystone/build --config Release --parallel
+        cmake --install tmp/keystone/build
+
+        echo "=== static libs installed ==="
+        ls -la "$LOCAL_PREFIX/lib" || true
+        ls -la "$LOCAL_PREFIX/include" || true
+
+    - name: '🏗️ Build fully static GUI binary'
       run: |
         set -e
         export PATH="$(go env GOPATH)/bin:$(go env GOROOT)/bin:$PATH"
+        LOCAL_PREFIX="$(pwd)/third_party/prefix"
         export CGO_ENABLED=1
-        export CGO_CFLAGS="-I${MSYSTEM_PREFIX}/include -O2 -Wall"
-        # Prefer static archives when present; always link C++ runtime for Keystone.
-        export CGO_LDFLAGS="-L${MSYSTEM_PREFIX}/lib -lcapstone -lkeystone -lstdc++ -lole32 -lshell32 -lkernel32 -lversion -luuid"
+        export CGO_CFLAGS="-I${LOCAL_PREFIX}/include -O2 -Wall"
+        # Link order: static archives first, then C++ runtime, then Windows system libs.
+        # -static via extldflags pulls in libgcc/libstdc++/winpthread statically.
+        export CGO_LDFLAGS="-L${LOCAL_PREFIX}/lib -lcapstone -lkeystone -lstdc++ -lm -lole32 -lshell32 -lkernel32 -lversion -luuid -lwinmm -lgdi32 -luser32 -lopengl32"
         go version
         mkdir -p build release
-        # -H windowsgui: hide the black console window for GUI apps on Windows
-        go build -trimpath -ldflags="-s -w -H windowsgui" -o "build/ASM to HEX Converter.exe" .
-        # Bundle runtime DLLs so the zip is portable outside MSYS2.
-        for dll in libkeystone libcapstone libgcc_s_seh-1 libstdc++-6 libwinpthread-1; do
-          if [ -f "${MSYSTEM_PREFIX}/bin/${dll}.dll" ]; then
-            cp "${MSYSTEM_PREFIX}/bin/${dll}.dll" build/
-          fi
-        done
-        # Common dependency DLLs used by mingw packages
-        for dll in $(ldd "build/ASM to HEX Converter.exe" | awk '/\/mingw64\/bin\// {print $3}'); do
-          cp -n "$dll" build/ || true
-        done
-        cp build/* release/
+
+        # -H windowsgui: no console window
+        # -extldflags=-static: fully static MinGW/C++/pthread (no libgcc/libstdc++ DLLs)
+        go build -trimpath \
+          -ldflags="-s -w -H windowsgui -extldflags=-static" \
+          -o "build/ASM to HEX Converter.exe" .
+
+        echo "=== PE imported DLLs (should be Windows system only) ==="
+        objdump -p "build/ASM to HEX Converter.exe" | grep -i "DLL Name" || true
+
+        # Fail the build if MinGW/runtime or engine DLLs are still imported.
+        BAD=$(objdump -p "build/ASM to HEX Converter.exe" | grep -iE "DLL Name.*(libgcc|libstdc|libwinpthread|libkeystone|libcapstone|msys-)" || true)
+        if [ -n "$BAD" ]; then
+          echo "ERROR: binary still depends on non-system DLLs:"
+          echo "$BAD"
+          exit 1
+        fi
+
+        # Release: single executable only
+        cp "build/ASM to HEX Converter.exe" release/
         (cd release && zip -r "../asm2hex-windows-${{ matrix.sys }}.zip" .)
         mv "asm2hex-windows-${{ matrix.sys }}.zip" release/
         ls -lah release/
+        ls -lah "build/ASM to HEX Converter.exe"
 
     - name: '🚀 Upload Build Artifacts'
       uses: actions/upload-artifact@v4
