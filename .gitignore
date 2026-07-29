@@ -17,6 +17,12 @@ tmp/
 third_party/
 
 build/
+# Generated Windows PE resources (created in CI / local packaging)
+*.syso
+resource.syso
+resource_windows.syso
+# Generated from PNG for packaging (CI may regenerate)
+# theme/icons/asm2hex.ico is committed for convenience when present
 build-riscv/
 fyne_metadata_init.go
 

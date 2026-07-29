@@ -31,18 +31,29 @@ jobs:
         go version
         mkdir -p build release
         go build -trimpath -ldflags="-s -w" -o "build/asm2hex" .
-        # Stage a portable zip with the binary
-        cp build/asm2hex release/
-        # Try to include dylibs for offline use (best-effort)
+
+        # Package as .app with Dock/Finder icon
+        chmod +x scripts/build_macos_app.sh
+        scripts/build_macos_app.sh "build/asm2hex" "build/ASM to HEX Converter.app"
+        test -d "build/ASM to HEX Converter.app"
+        test -f "build/ASM to HEX Converter.app/Contents/Resources/AppIcon.icns"
+
+        # Zip the .app (and optional dylibs for offline use)
+        mkdir -p release
+        ditto -c -k --sequesterRsrc --keepParent \
+          "build/ASM to HEX Converter.app" \
+          "release/asm2hex-macos.zip"
+
+        # Best-effort: also ship dylibs next to the zip for non-app use
         mkdir -p release/lib
         for lib in libkeystone libcapstone; do
           if ls "${PREFIX}/lib/${lib}"*.dylib >/dev/null 2>&1; then
             cp "${PREFIX}/lib/${lib}"*.dylib release/lib/ || true
           fi
         done
-        (cd release && zip -r ../asm2hex-macos.zip .)
-        mv asm2hex-macos.zip release/
         ls -lah release/
+        ls -lah "build/ASM to HEX Converter.app/Contents/MacOS/"
+        ls -lah "build/ASM to HEX Converter.app/Contents/Resources/"
 
     - name: 上传构建产物 (Upload Build Artifacts)
       uses: actions/upload-artifact@v4

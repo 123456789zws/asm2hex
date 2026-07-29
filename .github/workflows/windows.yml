@@ -69,18 +69,28 @@ jobs:
 
         test -f "$LOCAL_PREFIX/lib/libkeystone.a"
 
-        # Put static archive where the MinGW linker always looks.
-        # Remove import library so -lkeystone cannot pick the DLL stub.
         cp -f "$LOCAL_PREFIX/lib/libkeystone.a" "${MSYSTEM_PREFIX}/lib/libkeystone.a"
         rm -f "${MSYSTEM_PREFIX}/lib/libkeystone.dll.a"
         mkdir -p "${MSYSTEM_PREFIX}/include"
         cp -a "$LOCAL_PREFIX/include/keystone" "${MSYSTEM_PREFIX}/include/"
-
-        echo "=== keystone static lib ==="
-        ls -la "${MSYSTEM_PREFIX}/lib/libkeystone.a"
-        ls -la "${MSYSTEM_PREFIX}/lib/libcapstone.a"
-        # Ensure capstone also uses static archive only
         rm -f "${MSYSTEM_PREFIX}/lib/libcapstone.dll.a" || true
+        ls -la "${MSYSTEM_PREFIX}/lib/libkeystone.a" "${MSYSTEM_PREFIX}/lib/libcapstone.a"
+
+    - name: '🎨 Embed Windows icon and version resources'
+      run: |
+        set -e
+        export PATH="$(go env GOPATH)/bin:$(go env GOROOT)/bin:$PATH"
+        python -m pip install --user pillow
+        python scripts/gen_ico.py
+        test -f theme/icons/asm2hex.ico
+        go install github.com/josephspurrier/goversioninfo/cmd/goversioninfo@v1.4.1
+        # Generate resource.syso next to main package so go build links it automatically
+        # -64: PE resource for amd64; file must be named *_windows.syso for go build
+        goversioninfo -64 \
+          -icon=theme/icons/asm2hex.ico \
+          -o=resource_windows.syso \
+          packaging/versioninfo.json
+        ls -la resource_windows.syso
 
     - name: '🏗️ Build fully static GUI binary'
       run: |
@@ -88,12 +98,12 @@ jobs:
         export PATH="$(go env GOPATH)/bin:$(go env GOROOT)/bin:$PATH"
         export CGO_ENABLED=1
         export CGO_CFLAGS="-I${MSYSTEM_PREFIX}/include -O2 -Wall"
-        # Static engines + C++/pthread; Windows system DLLs remain dynamic (normal).
         export CGO_LDFLAGS="-L${MSYSTEM_PREFIX}/lib -Wl,-Bstatic -lkeystone -lcapstone -lstdc++ -lwinpthread -Wl,-Bdynamic -lm -lole32 -lshell32 -lkernel32 -lversion -luuid -lwinmm -lgdi32 -luser32 -lopengl32 -ldwmapi -lcomdlg32 -lcomctl32 -limm32"
 
         go version
         mkdir -p build release
 
+        # resource_windows.syso embeds icon + version info; -H windowsgui hides console
         go build -trimpath \
           -ldflags="-s -w -H windowsgui -extldflags=-static-libgcc -extldflags=-static-libstdc++" \
           -o "build/ASM to HEX Converter.exe" .
@@ -108,7 +118,11 @@ jobs:
           exit 1
         fi
 
-        # Single-file zip
+        # Verify icon resource is present in the PE
+        if ! objdump -p "build/ASM to HEX Converter.exe" | grep -qi "Icon\|RT_GROUP_ICON\|Resource"; then
+          echo "WARNING: could not confirm icon resource via objdump (continuing)"
+        fi
+
         cp "build/ASM to HEX Converter.exe" release/
         (cd release && zip -r "../asm2hex-windows-${{ matrix.sys }}.zip" .)
         mv "asm2hex-windows-${{ matrix.sys }}.zip" release/

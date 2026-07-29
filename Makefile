@@ -129,6 +129,12 @@ build_riscv:
 	mv -fv $(if $(filter $(PLATFORM),Windows),*.exe,*.app) ./build-riscv && \
 	echo "Build completed for $(PLATFORM)"
 
+# Optional: generate Windows icon resource (requires Python Pillow + goversioninfo)
+icon-windows:
+	python scripts/gen_ico.py
+	go install github.com/josephspurrier/goversioninfo/cmd/goversioninfo@v1.4.1
+	goversioninfo -64 -icon=theme/icons/asm2hex.ico -o=resource_windows.syso packaging/versioninfo.json
+
 build:
 ifeq ($(PLATFORM),Windows)
 	@mkdir -p ./build && \
@@ -136,14 +142,14 @@ ifeq ($(PLATFORM),Windows)
 	CGO_CFLAGS="$(CGO_CFLAGS)" \
 	CGO_LDFLAGS="$(CGO_LDFLAGS)" \
 	go build -trimpath -ldflags="$(GO_LDFLAGS)" -o "./build/ASM to HEX Converter.exe" . && \
-	echo "Build completed for $(PLATFORM) (static + windowsgui, single exe)"
+	echo "Build completed for $(PLATFORM) (static + windowsgui; run 'make icon-windows' first for exe icon)"
 else
 	@mkdir -p ./build && \
 	CGO_ENABLED=1 \
 	CGO_CFLAGS="$(CGO_CFLAGS)" \
 	CGO_LDFLAGS="$(CGO_LDFLAGS)" \
-	fyne package --release --target $(TARGET) --icon ./theme/icons/asm2hex.png && \
-	rm -rf ./build/*.app && \
-	mv -fv *.app ./build && \
-	echo "Build completed for $(PLATFORM)"
+	go build -trimpath -ldflags="-s -w" -o "./build/asm2hex" . && \
+	chmod +x scripts/build_macos_app.sh && \
+	scripts/build_macos_app.sh "./build/asm2hex" "./build/ASM to HEX Converter.app" && \
+	echo "Build completed for $(PLATFORM) (.app with icon)"
 endif
