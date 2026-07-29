@@ -2,10 +2,6 @@ name: macOS 构建 (macOS Build)
 
 on:
   workflow_call:
-    outputs:
-      artifact_name:
-        description: "Uploaded artifact name"
-        value: macos-build
 
 jobs:
   build:
@@ -13,8 +9,6 @@ jobs:
 
     steps:
     - uses: actions/checkout@v4
-      with:
-        fetch-depth: 0
 
     - name: 设置 Go 环境 (Set up Go)
       uses: actions/setup-go@v5
@@ -23,33 +17,32 @@ jobs:
 
     - name: 安装依赖 (macOS) (Install dependencies (macOS))
       run: |
-        brew install cmake
-        # Allow older Keystone/Capstone CMakeLists on CMake 4+
-        echo "CMAKE_POLICY_VERSION_MINIMUM=3.5" >> "$GITHUB_ENV"
-
-    - name: 安装 Fyne (Install Fyne)
-      run: go install fyne.io/fyne/v2/cmd/fyne@v2.4.5
-
-    - name: 设置环境变量 (Set up environment variables)
-      run: |
-        echo "CGO_ENABLED=1" >> "$GITHUB_ENV"
-        echo "CGO_CFLAGS=-I/usr/local/include -O2 -Wall" >> "$GITHUB_ENV"
-        echo "CGO_LDFLAGS=-L/usr/local/lib -lcapstone -lkeystone" >> "$GITHUB_ENV"
-        echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
-
-    - name: 构建 Capstone 和 Keystone 库 (Build Capstone and Keystone libraries)
-      run: make lib
+        brew install capstone keystone
+        echo "PKG_CONFIG_PATH=$(brew --prefix)/lib/pkgconfig" >> "$GITHUB_ENV"
+        echo "$(brew --prefix)/bin" >> "$GITHUB_PATH"
 
     - name: 构建项目 (Build project)
-      run: make build
-
-    - name: 压缩发布资源 (macOS) (Compress Release Asset (macOS))
       run: |
-        mkdir -p release
-        cp -R ./build/*.app ./release/ || true
-        # Also keep raw app bundle name stable for release consumers
-        zip -r "asm2hex-macos.zip" ./release/*
-        mv asm2hex-macos.zip ./release/
+        set -euo pipefail
+        PREFIX="$(brew --prefix)"
+        export CGO_ENABLED=1
+        export CGO_CFLAGS="-I${PREFIX}/include -O2 -Wall"
+        export CGO_LDFLAGS="-L${PREFIX}/lib -lcapstone -lkeystone -lstdc++ -Wl,-rpath,${PREFIX}/lib"
+        go version
+        mkdir -p build release
+        go build -trimpath -ldflags="-s -w" -o "build/asm2hex" .
+        # Stage a portable zip with the binary
+        cp build/asm2hex release/
+        # Try to include dylibs for offline use (best-effort)
+        mkdir -p release/lib
+        for lib in libkeystone libcapstone; do
+          if ls "${PREFIX}/lib/${lib}"*.dylib >/dev/null 2>&1; then
+            cp "${PREFIX}/lib/${lib}"*.dylib release/lib/ || true
+          fi
+        done
+        (cd release && zip -r ../asm2hex-macos.zip .)
+        mv asm2hex-macos.zip release/
+        ls -lah release/
 
     - name: 上传构建产物 (Upload Build Artifacts)
       uses: actions/upload-artifact@v4
@@ -57,5 +50,4 @@ jobs:
         name: macos-build
         path: |
           ./release/*.zip
-          ./release/*.app
         if-no-files-found: error

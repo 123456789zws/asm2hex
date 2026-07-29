@@ -2,10 +2,6 @@ name: Windows 构建 (Windows Build)
 
 on:
   workflow_call:
-    outputs:
-      artifact_name:
-        description: "Uploaded artifact name"
-        value: windows-mingw64-build
 
 jobs:
   build:
@@ -26,8 +22,6 @@ jobs:
     steps:
     - name: '🧰 Checkout'
       uses: actions/checkout@v4
-      with:
-        fetch-depth: 0
 
     - name: '${{ matrix.icon }} Setup MSYS2'
       uses: msys2/setup-msys2@v2
@@ -37,36 +31,38 @@ jobs:
         install: >-
           git
           make
+          zip
         pacboy: >-
           toolchain:p
-          cmake:p
-          ninja:p
           go:p
-          7zip:p
-
-    - name: '🚧 Install Fyne'
-      run: |
-        export PATH="$(go env GOPATH)/bin:$(go env GOROOT)/bin:$PATH"
-        go install fyne.io/fyne/v2/cmd/fyne@v2.4.5
-        cp "$(go env GOPATH)/bin/fyne.exe" "$MSYSTEM_PREFIX/bin/"
-
-    - name: '📦 Build Capstone and Keystone libraries'
-      run: |
-        export PATH="$(go env GOPATH)/bin:$(go env GOROOT)/bin:$PATH"
-        make lib
+          keystone:p
+          capstone:p
 
     - name: '🏗️ Build project'
       run: |
+        set -e
         export PATH="$(go env GOPATH)/bin:$(go env GOROOT)/bin:$PATH"
         export CGO_ENABLED=1
-        make build
-
-    - name: '📁 Compress Release Asset (Windows)'
-      run: |
-        mkdir -p release
-        cp ./build/*.exe ./release/
-        7z a -tzip "asm2hex-windows-${{ matrix.sys }}.zip" ./release/*
-        mv "asm2hex-windows-${{ matrix.sys }}.zip" ./release/
+        export CGO_CFLAGS="-I${MSYSTEM_PREFIX}/include -O2 -Wall"
+        # Prefer static archives when present; always link C++ runtime for Keystone.
+        export CGO_LDFLAGS="-L${MSYSTEM_PREFIX}/lib -lcapstone -lkeystone -lstdc++ -lole32 -lshell32 -lkernel32 -lversion -luuid"
+        go version
+        mkdir -p build release
+        go build -trimpath -ldflags="-s -w" -o "build/ASM to HEX Converter.exe" .
+        # Bundle runtime DLLs so the zip is portable outside MSYS2.
+        for dll in libkeystone libcapstone libgcc_s_seh-1 libstdc++-6 libwinpthread-1; do
+          if [ -f "${MSYSTEM_PREFIX}/bin/${dll}.dll" ]; then
+            cp "${MSYSTEM_PREFIX}/bin/${dll}.dll" build/
+          fi
+        done
+        # Common dependency DLLs used by mingw packages
+        for dll in $(ldd "build/ASM to HEX Converter.exe" | awk '/\/mingw64\/bin\// {print $3}'); do
+          cp -n "$dll" build/ || true
+        done
+        cp build/* release/
+        (cd release && zip -r "../asm2hex-windows-${{ matrix.sys }}.zip" .)
+        mv "asm2hex-windows-${{ matrix.sys }}.zip" release/
+        ls -lah release/
 
     - name: '🚀 Upload Build Artifacts'
       uses: actions/upload-artifact@v4
@@ -74,5 +70,4 @@ jobs:
         name: windows-${{ matrix.sys }}-build
         path: |
           ./release/*.zip
-          ./release/*.exe
         if-no-files-found: error

@@ -52,9 +52,9 @@ jobs:
 
       - name: Prepare release assets
         run: |
+          set -euo pipefail
           mkdir -p upload
           find dist -type f -print
-          # Prefer zip packages; fall back to raw binaries
           if ls dist/windows/*.zip >/dev/null 2>&1; then
             cp dist/windows/*.zip upload/
           else
@@ -65,10 +65,14 @@ jobs:
           else
             (cd dist/macos && zip -r ../../upload/asm2hex-macos.zip .)
           fi
-          # Stable release names including version
+          # Stable versioned names
+          ver="${{ steps.version.outputs.version }}"
           for f in upload/*.zip; do
             base=$(basename "$f" .zip)
-            cp "$f" "upload/${base}-${{ steps.version.outputs.version }}.zip"
+            case "$base" in
+              *-"$ver") ;;
+              *) cp "$f" "upload/${base}-${ver}.zip" ;;
+            esac
           done
           ls -lah upload/
 
