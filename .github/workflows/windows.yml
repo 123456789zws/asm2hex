@@ -11,10 +11,7 @@ jobs:
       fail-fast: false
       matrix:
         include:
-        #   - { icon: '⬛', sys: mingw32 }
           - { icon: '🟦', sys: mingw64 }
-        #   - { icon: '🟨', sys: ucrt64 }
-        #   - { icon: '🟧', sys: clang64 }
 
     name: 🚧${{ matrix.icon }} ${{ matrix.sys }}
 
@@ -25,67 +22,115 @@ jobs:
     steps:
     - name: '🧰 Checkout'
       uses: actions/checkout@v4
-      with:
-        fetch-depth: 0
 
     - name: '${{ matrix.icon }} Setup MSYS2'
       uses: msys2/setup-msys2@v2
       with:
-        msystem: ${{matrix.sys}}
+        msystem: ${{ matrix.sys }}
         update: true
         install: >-
           git
           make
+          zip
+          binutils
+          python
         pacboy: >-
           toolchain:p
           cmake:p
           ninja:p
           go:p
-          7zip:p
+          capstone:p
 
-    - name: '🚧 Install Fyne'
+    - name: '📦 Build static Keystone and install into MinGW prefix'
       run: |
-        go install fyne.io/fyne/v2/cmd/fyne@latest
-        if [ $? -ne 0 ]; then
-          echo "安装 Fyne 失败 (Failed to install Fyne)"
-          exit 1
-        fi
-        export PATH="$(go env GOPATH)/bin:$PATH"
-        cp "$(go env GOPATH)/bin/fyne.exe" "$MSYSTEM_PREFIX/bin/"
+        set -e
+        LOCAL_PREFIX="$(pwd)/third_party/prefix"
+        mkdir -p "$LOCAL_PREFIX"
 
-    - name: '🚀 Set up environment variables'
+        git clone --depth 1 --branch 0.9.2 https://github.com/keystone-engine/keystone.git tmp/keystone
+        cd tmp/keystone
+
+        # Patch for CMake 4+
+        find . -name 'CMakeLists.txt' -print0 | xargs -0 sed -i \
+          -e 's/cmake_minimum_required(VERSION [0-9.]*)/cmake_minimum_required(VERSION 3.16)/g' \
+          -e 's/cmake_policy(SET CMP0051 OLD)/cmake_policy(SET CMP0051 NEW)/g' \
+          -e 's/cmake_policy(SET CMP0012 OLD)/cmake_policy(SET CMP0012 NEW)/g'
+
+        cmake -S . -B build -G Ninja \
+          -DCMAKE_INSTALL_PREFIX="$LOCAL_PREFIX" \
+          -DCMAKE_BUILD_TYPE=Release \
+          -DBUILD_SHARED_LIBS=OFF \
+          -DBUILD_LIBS_ONLY=ON \
+          -DKEYSTONE_BUILD_STATIC_RUNTIME=ON \
+          -DCMAKE_POLICY_VERSION_MINIMUM=3.16
+
+        cmake --build build --config Release --parallel
+        cmake --install build
+
+        test -f "$LOCAL_PREFIX/lib/libkeystone.a"
+
+        cp -f "$LOCAL_PREFIX/lib/libkeystone.a" "${MSYSTEM_PREFIX}/lib/libkeystone.a"
+        rm -f "${MSYSTEM_PREFIX}/lib/libkeystone.dll.a"
+        mkdir -p "${MSYSTEM_PREFIX}/include"
+        cp -a "$LOCAL_PREFIX/include/keystone" "${MSYSTEM_PREFIX}/include/"
+        rm -f "${MSYSTEM_PREFIX}/lib/libcapstone.dll.a" || true
+        ls -la "${MSYSTEM_PREFIX}/lib/libkeystone.a" "${MSYSTEM_PREFIX}/lib/libcapstone.a"
+
+    - name: '🎨 Embed Windows icon and version resources'
       run: |
+        set -e
+        export PATH="$(go env GOROOT)/bin:$PATH"
+        # Use committed ICO; optional regenerate with scripts/gen_ico.py + Pillow
+        test -f theme/icons/asm2hex.ico
+        # go run avoids MSYS PATH issues with go install binaries
+        # -64: PE resource for amd64; *_windows.syso is linked by go build on Windows
+        go run github.com/josephspurrier/goversioninfo/cmd/goversioninfo@v1.4.1 -64 \
+          -icon theme/icons/asm2hex.ico \
+          -o resource_windows.syso \
+          packaging/versioninfo.json
+        ls -la resource_windows.syso
+
+    - name: '🏗️ Build fully static GUI binary'
+      run: |
+        set -e
+        export PATH="$(go env GOPATH)/bin:$(go env GOROOT)/bin:$PATH"
         export CGO_ENABLED=1
-        export CGO_CFLAGS="-I/$MSYSTEM_PREFIX/include -O2 -Wall"
-        export CGO_LDFLAGS="-L/$MSYSTEM_PREFIX/lib -static -lcapstone -lkeystone -lole32 -lshell32 -lkernel32 -lversion -luuid"
-        export GOROOT="$(go env GOROOT)"
-        export GOPATH="$(go env GOPATH)"
-        export PATH="$GOROOT/bin:$GOPATH/bin:$PATH"
+        export CGO_CFLAGS="-I${MSYSTEM_PREFIX}/include -O2 -Wall"
+        export CGO_LDFLAGS="-L${MSYSTEM_PREFIX}/lib -Wl,-Bstatic -lkeystone -lcapstone -lstdc++ -lwinpthread -Wl,-Bdynamic -lm -lole32 -lshell32 -lkernel32 -lversion -luuid -lwinmm -lgdi32 -luser32 -lopengl32 -ldwmapi -lcomdlg32 -lcomctl32 -limm32"
 
-    - name: '📦 Build Capstone and Keystone libraries'
-      run: |
-        make lib
-        if [ $? -ne 0 ]; then
-          echo "构建 Capstone 和 Keystone 库失败 (Failed to build Capstone and Keystone libraries)"
+        go version
+        mkdir -p build release
+
+        # resource_windows.syso embeds icon + version info; -H windowsgui hides console
+        go build -trimpath \
+          -ldflags="-s -w -H windowsgui -extldflags=-static-libgcc -extldflags=-static-libstdc++" \
+          -o "build/ASM to HEX Converter.exe" .
+
+        echo "=== PE imported DLLs (Windows system only is OK) ==="
+        objdump -p "build/ASM to HEX Converter.exe" | grep -i "DLL Name" || true
+
+        BAD=$(objdump -p "build/ASM to HEX Converter.exe" | grep -iE "DLL Name.*(libgcc|libstdc\+\+|libwinpthread|libkeystone|libcapstone|msys-)" || true)
+        if [ -n "$BAD" ]; then
+          echo "ERROR: binary still depends on MinGW/engine DLLs:"
+          echo "$BAD"
           exit 1
         fi
 
-    - name: '🏗️ Build project'
-      run: |
-        make build
-        if [ $? -ne 0 ]; then
-          echo "构建项目失败 (Failed to build project)"
-          exit 1
+        # Verify icon resource is present in the PE
+        if ! objdump -p "build/ASM to HEX Converter.exe" | grep -qi "Icon\|RT_GROUP_ICON\|Resource"; then
+          echo "WARNING: could not confirm icon resource via objdump (continuing)"
         fi
 
-    - name: '📁 Compress Release Asset (Windows)'
-      run: |
-        mkdir release
-        cp ./build/*.exe ./release/
-        7z a -tzip asm2hex-windows-${{ matrix.sys }}.zip ./release/*
+        cp "build/ASM to HEX Converter.exe" release/
+        (cd release && zip -r "../asm2hex-windows-${{ matrix.sys }}.zip" .)
+        mv "asm2hex-windows-${{ matrix.sys }}.zip" release/
+        ls -lah release/
+        ls -lah "build/ASM to HEX Converter.exe"
 
     - name: '🚀 Upload Build Artifacts'
-      uses: actions/upload-artifact@v3
+      uses: actions/upload-artifact@v4
       with:
         name: windows-${{ matrix.sys }}-build
-        path: ./release/
+        path: |
+          ./release/*.zip
+        if-no-files-found: error

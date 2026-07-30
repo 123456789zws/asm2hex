@@ -11,6 +11,9 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"sync"
+	"sync/atomic"
+	"time"
 
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/app"
@@ -79,6 +82,20 @@ var asm2hexTools *fyne.Container
 var hex2asmTools *fyne.Container
 var output1_info *widget.Label
 
+// Widgets used by background conversion (set in createMainUI).
+var convStatus *widget.Label
+var convOutput *widget.Entry
+var convEditor *widget.Entry
+var convOffset *widget.Entry
+
+// convertMu serializes conversions; convertSeq drops stale async results.
+var convertMu sync.Mutex
+var convertSeq atomic.Uint64
+var convertDebounceMu sync.Mutex
+var convertDebounceTimer *time.Timer
+
+const convertDebounceDelay = 200 * time.Millisecond
+
 func getOptionNames(options archs.OptionSlice) []string {
 	names := make([]string, len(options))
 	for i, option := range options {
@@ -115,12 +132,14 @@ func updateSelectParam() {
 			CSSelectParam.Info += " " + capstoneModeDropdown.Selected
 		}
 	}
-	if keystoneSyntaxDropdown != nil && archs.KeystoneSyntaxList != nil {
+	if keystoneSyntaxDropdown != nil && archs.KeystoneSyntaxList != nil && len(archs.KeystoneSyntaxList) > 0 {
 		index := keystoneSyntaxDropdown.SelectedIndex()
 		if index >= 0 && index < len(archs.KeystoneSyntaxList) {
 			KSSelectParam.Syntax = int(archs.KeystoneSyntaxList[index].Const)
 			KSSelectParam.Info += " " + keystoneSyntaxDropdown.Selected
 		}
+	} else {
+		KSSelectParam.Syntax = -1
 	}
 	if capstoneSyntaxDropdown != nil && archs.CapstoneSyntaxList != nil {
 		index := capstoneSyntaxDropdown.SelectedIndex()
@@ -142,9 +161,42 @@ func updateSelectParam() {
 	if output1_info != nil {
 		output1_info.Refresh()
 	}
-	if convertBtn != nil {
-		convertBtn.Tapped(nil)
+	scheduleConversion()
+}
+
+func conversionReady() bool {
+	return convStatus != nil && convOutput != nil && convEditor != nil && convOffset != nil
+}
+
+// scheduleConversion debounces auto-convert so rapid typing/paste does not
+// flood the assembler or freeze the UI thread.
+func scheduleConversion() {
+	if !conversionReady() {
+		return
 	}
+	convertDebounceMu.Lock()
+	defer convertDebounceMu.Unlock()
+	if convertDebounceTimer != nil {
+		convertDebounceTimer.Stop()
+	}
+	convertDebounceTimer = time.AfterFunc(convertDebounceDelay, func() {
+		// Run conversion off the UI thread so a slow/bad keystone call cannot freeze UI.
+		go doConversion(convStatus, convOutput, convEditor, convOffset)
+	})
+}
+
+// triggerConversion runs conversion immediately (Convert button / mode toggle).
+func triggerConversion() {
+	if !conversionReady() {
+		return
+	}
+	convertDebounceMu.Lock()
+	if convertDebounceTimer != nil {
+		convertDebounceTimer.Stop()
+		convertDebounceTimer = nil
+	}
+	convertDebounceMu.Unlock()
+	go doConversion(convStatus, convOutput, convEditor, convOffset)
 }
 func createDropdowns() *fyne.Container {
 	keystoneArchDropdown = &widget.Select{}
@@ -161,8 +213,21 @@ func createDropdowns() *fyne.Container {
 		}
 		if options, ok := archs.KeystoneSyntaxOptions[mapKey]; ok && keystoneSyntaxDropdown != nil {
 			archs.KeystoneSyntaxList = options
-			keystoneSyntaxDropdown.SetOptions(getOptionNames(options))
-			keystoneSyntaxDropdown.SetSelectedIndex(0)
+			names := getOptionNames(options)
+			keystoneSyntaxDropdown.SetOptions(names)
+			if len(names) > 0 {
+				keystoneSyntaxDropdown.SetSelectedIndex(0)
+			} else {
+				keystoneSyntaxDropdown.Selected = ""
+				keystoneSyntaxDropdown.Refresh()
+				KSSelectParam.Syntax = -1
+			}
+		} else if keystoneSyntaxDropdown != nil {
+			archs.KeystoneSyntaxList = nil
+			keystoneSyntaxDropdown.SetOptions([]string{})
+			keystoneSyntaxDropdown.Selected = ""
+			keystoneSyntaxDropdown.Refresh()
+			KSSelectParam.Syntax = -1
 		}
 		updateSelectParam()
 	}
@@ -333,7 +398,7 @@ cbnz r0, #0x682c4
 	offsetInput.SetText("0")
 
 	assemblyEditor.OnChanged = func(text string) {
-		convertBtn.Tapped(nil)
+		scheduleConversion()
 	}
 	offsetInput.OnChanged = func(text string) {
 		if text == "" {
@@ -348,7 +413,7 @@ cbnz r0, #0x682c4
 			}
 		}
 		status.SetText(fmt.Sprintf("Offset: 0x%x", offset))
-		convertBtn.Tapped(nil)
+		scheduleConversion()
 		status.Refresh()
 	}
 
@@ -415,14 +480,14 @@ cbnz r0, #0x682c4
 	status.Alignment = fyne.TextAlignTrailing
 	status.TextStyle = fyne.TextStyle{Bold: true}
 
+	// Wire globals used by debounced / background conversion.
+	convStatus = status
+	convOutput = output1
+	convEditor = assemblyEditor
+	convOffset = offsetInput
+
 	convertBtn = widget.NewButtonWithIcon("Convert", theme.StorageIcon(), func() {
-		// Do conversion here
-		doConversion(
-			status,
-			output1,
-			assemblyEditor,
-			offsetInput,
-		)
+		triggerConversion()
 	})
 	convertBtn.Importance = widget.HighImportance
 	toggleBtn = widget.NewButtonWithIcon("Toggle Mode", theme.ViewRefreshIcon(), func() {
@@ -441,7 +506,7 @@ cbnz r0, #0x682c4
 		}
 		app_title.Refresh()
 		SetMode(win, status, assemblyLabel, assemblyEditor)
-		convertBtn.Tapped(nil)
+		triggerConversion()
 		toggleBtn.Refresh()
 	})
 	toggleBtn.Importance = widget.WarningImportance
@@ -504,7 +569,7 @@ cbnz r0, #0x682c4
 					}
 					prefix_hex = false
 				}
-				convertBtn.Tapped(nil)
+				triggerConversion()
 			}),
 			widget.NewCheck("GDB/LLDB", func(checked bool) {
 				status.SetText("Changed")
@@ -518,19 +583,19 @@ cbnz r0, #0x682c4
 				}
 				output1_info.Refresh()
 				status.Refresh()
-				convertBtn.Tapped(nil)
+				triggerConversion()
 			}),
 			widget.NewCheck("Add Address", func(checked bool) {
 				status.SetText("Add Address to output")
 				addAddress = checked
-				convertBtn.Tapped(nil)
+				triggerConversion()
 			})),
 		grid,
 		layout.NewSpacer(),
 		status_container,
 	)
 
-	convertBtn.Tapped(nil)
+	triggerConversion()
 
 	return main_layout
 }
@@ -565,83 +630,113 @@ func SetMode(win fyne.Window, status *widget.Label, assemblyLabel *widget.Label,
 	assemblyLabel.Refresh()
 }
 
+func formatEngineError(err error, marker string) string {
+	if err == nil {
+		return "Unknown error"
+	}
+	errMsg := err.Error()
+	if strings.Contains(errMsg, marker) {
+		errMsg = strings.Split(errMsg, marker)[0]
+	}
+	return strings.TrimSpace(errMsg)
+}
+
 func doConversion(status *widget.Label,
 	_output *widget.Entry,
 	assemblyEditor *widget.Entry,
 	offsetInput *widget.Entry) {
 
+	// Snapshot inputs before heavy work (may run on a background goroutine).
+	srcText := assemblyEditor.Text
+	offsetText := offsetInput.Text
+	mode := toggle_mode
+	ksArch := keystone.Architecture(KSSelectParam.Arch)
+	ksMode := keystone.Mode(KSSelectParam.Mode)
+	ksSyntax := KSSelectParam.Syntax
+	csArch := capstone.Architecture(CSSelectParam.Arch)
+	csMode := capstone.Mode(CSSelectParam.Mode)
+	csSyntax := CSSelectParam.Syntax
+	useBigEndian := bigEndian
+	useAddAddress := addAddress
+
+	seq := convertSeq.Add(1)
+
+	convertMu.Lock()
+	defer convertMu.Unlock()
+
+	// A newer conversion was scheduled while we waited for the lock.
+	if seq != convertSeq.Load() {
+		return
+	}
+
 	status.SetText("Converting...")
 	status.Refresh()
 
-	_output.SetText("")
+	lines := strings.Split(srcText, "\n")
+	curOffset, _ := strconv.ParseUint(strings.ReplaceAll(strings.ToLower(offsetText), "0x", ""), 16, 64)
 
-	codes = strings.Split(assemblyEditor.Text, "\n")
-	offset, _ := strconv.ParseUint(strings.ReplaceAll(strings.ToLower(offsetInput.Text), "0x", ""), 16, 64)
+	var out strings.Builder
+	statusText := "Done"
 
-	if toggle_mode == ASM2HEX {
-		for _, v := range codes {
+	if mode == ASM2HEX {
+		for _, v := range lines {
 			if strings.TrimSpace(v) == "" {
 				continue
 			}
-			//asm to hex
-			encoding, _, ok, err :=
-				archs.Assemble(
-					keystone.Architecture(KSSelectParam.Arch),
-					keystone.Mode(KSSelectParam.Mode),
-					v,
-					offset,
-					bigEndian,
-					int(KSSelectParam.Syntax))
+			encoding, _, ok, err := archs.Assemble(
+				ksArch,
+				ksMode,
+				v,
+				curOffset,
+				useBigEndian,
+				ksSyntax,
+			)
 			if !ok {
-				var errMsg = "Unknown error"
-				if err != nil {
-					errMsg = err.Error()
-				}
-				if strings.Contains(errMsg, "(KS") {
-					errMsg = strings.Split(errMsg, "(KS")[0]
-				}
-				_output.Append(errMsg + "\n")
-				_output.Refresh()
+				out.WriteString(formatEngineError(err, "(KS"))
+				out.WriteByte('\n')
 			} else {
-				if addAddress {
-					_output.Append(fmt.Sprintf("%08X:\t", offset))
+				if useAddAddress {
+					out.WriteString(fmt.Sprintf("%08X:\t", curOffset))
 				}
-				_output.Append(hexdump(encoding) + "\n")
+				out.WriteString(hexdump(encoding))
+				out.WriteByte('\n')
+				curOffset += uint64(len(encoding))
 			}
-			offset += uint64(len(encoding))
 		}
 	} else {
-		encoding, err := hexStringToBytes(strings.Join(codes, ""))
+		encoding, err := hexStringToBytes(strings.Join(lines, ""))
 		if err != nil {
+			if seq != convertSeq.Load() {
+				return
+			}
 			status.SetText(err.Error())
 			status.Refresh()
+			_output.SetText("")
+			_output.Refresh()
 			return
 		}
-		// fmt.Println("hex:", hexdump(encoding))
 		result, _, ok, err := archs.Disassemble(
-			capstone.Architecture(CSSelectParam.Arch),
-			capstone.Mode(CSSelectParam.Mode),
+			csArch,
+			csMode,
 			encoding,
-			offset,
-			bigEndian,
-			int(CSSelectParam.Syntax),
-			addAddress,
+			curOffset,
+			useBigEndian,
+			csSyntax,
+			useAddAddress,
 		)
 		if !ok {
-			var errMsg = "Unknown error"
-			if err != nil {
-				errMsg = err.Error()
-			}
-			if strings.Contains(errMsg, "(CS") {
-				errMsg = strings.Split(errMsg, "(CS")[0]
-			}
-			_output.Append(errMsg + "\n")
-			_output.Refresh()
+			out.WriteString(formatEngineError(err, "(CS"))
+			out.WriteByte('\n')
 		} else {
-			_output.Append(result)
+			out.WriteString(result)
 		}
 	}
-	status.SetText("Done")
+
+	if seq != convertSeq.Load() {
+		return
+	}
+	status.SetText(statusText)
 	status.Refresh()
+	_output.SetText(out.String())
 	_output.Refresh()
 }

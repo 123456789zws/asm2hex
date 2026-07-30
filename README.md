@@ -1,5 +1,10 @@
+> The new version is refactored using C++ (cpp), while the original version was developed using Golang. A cross-platform GUI tool for converting between Assembly and Machine Code (Hex), powered by Keystone Engine and Capstone Engine.
+[v2-asm2hex2](https://github.com/suifei/asm2hex2)
+> 新版本使用C ++（cpp）重构，而原始版本是使用Golang开发的。一个跨平台的GUI工具，用于在Assembly和机器代码（Hex）之间进行转换，由Keystone Engine和Capstone Engine提供支持。
+> 新版本将提供更加详细的汇编信息，请勾选“Verbose“进行查看，每次记住点一下”Assembie"或"Disassembie"按钮。
+> 采用C++ 使用wxWidgets 3.2.2版本进行重构，一样跨平台运行，并兼容 Windows 7。
 
-# ASM2HEX
+# v2-asm2hex2
 
 [![GitHub Streak](https://streak-stats.demolab.com?user=suifei&theme=swift&locale=zh_Hans&date_format=%5BY.%5Dn.j)](https://git.io/streak-stats)
 
@@ -17,6 +22,56 @@
 [![Github issues](https://img.shields.io/github/issues/suifei/asm2hex.svg?style=flat-square)](https://github.com/suifei/asm2hex)
 [![Github last commit](https://img.shields.io/github/last-commit/suifei/asm2hex.svg?style=flat-square)](https://github.com/suifei/asm2hex)
 [![Github contributors](https://img.shields.io/github/contributors/suifei/asm2hex.svg?style=flat-square)](https://github.com/suifei/asm2hex)
+
+A powerful cross-platform GUI tool for Assembly-Machine Code conversion, reborn with C++.
+
+## What's New in V2
+
+The v2-asm2hex2 has been completely rewritten in C++, marking a significant evolution from its Golang predecessor. This new version brings enhanced performance, broader compatibility, and richer features while maintaining the same intuitive experience.
+
+### Key Features
+- **Enhanced Assembly Information**: New "Verbose" mode provides detailed assembly analysis
+- **Cross-Platform Compatibility**: Built with wxWidgets 3.2.2, ensuring consistent experience across different operating systems
+- **Extended OS Support**: Compatible down to Windows 7 and equivalent systems
+- **Powerful Engine Integration**: Leveraging Keystone Engine for assembly and Capstone Engine for disassembly
+- **User-Friendly Interface**: Clean, intuitive GUI with simple "Assemble" and "Disassemble" operations
+
+### Core Functions
+- Assembly to Machine Code (Hex) conversion
+- Machine Code to Assembly decompilation
+- Detailed instruction analysis in Verbose mode
+- Real-time conversion with single-click operation
+
+---
+
+中文版说明：
+
+# v2-asm2hex2
+
+一款功能强大的跨平台汇编代码转换工具，采用C++全新重构。
+
+## V2 版本更新
+
+v2-asm2hex2 已完全使用C++重写，相比前代Golang版本带来了显著的进化。新版本不仅提供了更优的性能和更广的兼容性，还增添了丰富的新功能，同时保持了直观的使用体验。
+
+### 核心特性
+- **增强的汇编信息**: 新增"Verbose"模式，提供详尽的汇编分析
+- **真正的跨平台**: 基于 wxWidgets 3.2.2 构建，确保各操作系统下的一致体验
+- **扩展的系统支持**: 向下兼容至 Windows 7 及同等系统
+- **强大的引擎支持**: 集成 Keystone Engine 和 Capstone Engine 双引擎
+- **友好的用户界面**: 简洁直观的界面设计，一键即可完成转换
+
+### 核心功能
+- 汇编代码转机器码（Hex）
+- 机器码反编译为汇编代码
+- Verbose 模式下的详细指令分析
+- 单击按钮即可实时转换
+
+---
+
+> 💡 Quick Tip: Enable "Verbose" mode for detailed assembly analysis. Remember to click "Assemble" or "Disassemble" button after making changes.
+
+# ASM2HEX
 
 ASM2HEX是一款用Go语言编写的,基于Fyne框架开发的汇编语言与十六进制机器码相互转换的图形化工具。它支持ARM64、ARM和Thumb三种指令集。
 
